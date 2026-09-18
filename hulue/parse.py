@@ -13,23 +13,40 @@ class Rule:
     body: str
 
 
-def _compile(body: str) -> re.Pattern:
+def _compile_segment(segment: str) -> str:
+    """编译不包含斜杠的一段：* 只匹配同层的一段名字。"""
     pieces = []
     index = 0
-    while index < len(body):
-        if body.startswith("**", index):
-            pieces.append(".+")
-            index += 2
-            if index < len(body) and body[index] == "/":
-                pieces.append("/")
-                index += 1
-            continue
-        if body[index] == "*":
-            pieces.append(".*")
+    while index < len(segment):
+        char = segment[index]
+        if char == "*":
+            pieces.append("[^/]*")
             index += 1
             continue
-        pieces.append(re.escape(body[index]))
+        if char == "\\" and index + 1 < len(segment) and segment[index + 1] in "#!":
+            pieces.append(re.escape(segment[index + 1]))
+            index += 2
+            continue
+        pieces.append(re.escape(char))
         index += 1
+    return "".join(pieces)
+
+
+def _compile(body: str) -> re.Pattern:
+    """编译规则正文，** 只有单独成段才能跨层，且允许中间零层。"""
+    pieces = []
+    segments = body.split("/")
+    for index, segment in enumerate(segments):
+        last = index == len(segments) - 1
+        if segment == "**":
+            if last:
+                pieces.append(".*")
+            else:
+                pieces.append("(?:[^/]+/)*")
+        else:
+            pieces.append(_compile_segment(segment))
+            if not last:
+                pieces.append("/")
     return re.compile("".join(pieces))
 
 
@@ -38,16 +55,16 @@ def load_rules(text: str):
     if not text:
         return rules
     for raw in text.splitlines():
-        if raw.startswith("#") or raw.strip() == "":
+        if raw.strip() == "":
             continue
-        if raw.lstrip().startswith("#"):
-            raw = raw.lstrip()[1:].strip()
-            if raw == "":
-                continue
         line = raw.strip()
+        if line.startswith("#"):
+            continue
         negated = False
         if line.startswith("!"):
             negated = True
+            line = line[1:]
+        elif line.startswith(("\\#", "\\!")):
             line = line[1:]
         dir_only = False
         if line.endswith("/"):
@@ -57,6 +74,8 @@ def load_rules(text: str):
         if line.startswith("/"):
             anchored = True
             line = line[1:]
+        elif "/" in line:
+            anchored = True
         if line == "":
             continue
         rules.append(
